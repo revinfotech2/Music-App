@@ -1,0 +1,78 @@
+package com.zilla.network
+
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import com.android.volley.RequestQueue
+import com.android.volley.Response
+import com.android.volley.toolbox.StringRequest
+
+import com.github.salomonbrys.kotson.*
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonParser
+import com.zilla.Album
+import com.zilla.Application
+import com.zilla.Image
+import java.util.*
+import javax.inject.Inject
+
+class SearchHandler(val context: Context) {
+
+    private val Tag = "SearchHandler"
+    private val SEARCH_URL = Uri.parse("https://api.discogs.com/database/search")
+    private val DISCOGS_API_KEY = "VDgrHCFJOTSTdUMyvCAe"
+    private val DISCOGS_API_SECRET = "HXHPkmfJJnrcfYmYYfBXrdlRDLAVmmuA"
+
+    @Inject lateinit var volleyQueue: RequestQueue
+
+    private val Gson = GsonBuilder()
+            .registerTypeAdapter<Album> {
+                deserialize {
+                    // HACK: Apparently Discogs does not return artist and title seperately, so we
+                    //       have to extract them this way. Also, some results dont have a year.
+                    val year by it.json.byNullableInt("year")
+                    Album(it.json["title"].string.split(" - ")[1],
+                            it.json["title"].string.split(" - ")[0],
+                            year,
+                            Image(it.json["thumb"].string))
+                }
+            }
+            .create()
+
+    init {
+        (context.applicationContext as Application).component.inject(this)
+    }
+
+    fun search(query: String, listener: (List<Album>) -> Unit) {
+        val uri = SEARCH_URL.buildUpon()
+                .appendQueryParameter("q", query)
+                .appendQueryParameter("type", "release")
+                .appendQueryParameter("key", DISCOGS_API_KEY)
+                .appendQueryParameter("secret", DISCOGS_API_SECRET)
+                .build()
+
+		Log.i(Tag, uri.toString())
+
+        val request = object : StringRequest(Method.GET, uri.toString(), Response.Listener<String> { reply ->
+            listener(parseFeed(reply))
+        }, Response.ErrorListener { error ->
+            Log.w(Tag, error)
+        }) {
+            override fun getHeaders(): MutableMap<String, String> {
+                val headers = HashMap<String, String>()
+                headers.put("User-agent", "funkytunes")
+                return headers
+            }
+        }
+
+        volleyQueue.add(request)
+    }
+
+    private fun parseFeed(data: String): List<Album> {
+        val json = JsonParser().parse(data)["results"].array
+        val items = Gson.fromJson<List<Album>>(json)
+        // HACK: Discogs returns many duplicate releases, so we try to remove duplicates by filtering
+        //       for unique artist and title.
+        return items.distinctBy { x -> x.artist + x.title }
+    }
+}
